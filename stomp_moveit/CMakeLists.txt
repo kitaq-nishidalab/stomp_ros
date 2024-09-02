@@ -22,6 +22,11 @@ find_package(Boost REQUIRED COMPONENTS system)
 
 add_definitions("-std=c++11")
 
+add_message_files(
+  FILES
+  PathSeed.msg
+)
+
 
 ###################################
 ## catkin specific configuration ##
@@ -62,6 +67,8 @@ add_library(${PROJECT_NAME}
   src/utils/kinematics.cpp
   src/utils/polynomial.cpp
 )
+
+# add_executable(pathseed_callback src/pathseed_callback.cpp)
 
 target_link_libraries(${PROJECT_NAME}
   stomp::stomp
@@ -109,6 +116,12 @@ add_library(${PROJECT_NAME}_noise_generators
  )
 target_link_libraries(${PROJECT_NAME}_noise_generators stomp::stomp ${catkin_LIBRARIES})
 
+# pathseed callback
+# target_link_libraries(pathseed_callback
+#   ${PROJECT_NAME}  # stomp_moveit ライブラリをリンク
+#   ${catkin_LIBRARIES}
+# )
+
 #############
 ## Install ##
 #############
@@ -152,4 +165,3 @@ install(
 #############
 ## Testing ##
 #############
-

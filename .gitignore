@@ -29,3 +29,6 @@ test_results
 *~lock*
 
 *~
+
+# ROS build
+build/

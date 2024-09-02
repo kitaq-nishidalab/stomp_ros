@@ -31,6 +31,13 @@
 #include <moveit/trajectory_processing/iterative_time_parameterization.h>
 #include <stomp_moveit/utils/kinematics.h>
 #include <stomp_moveit/utils/polynomial.h>
+#include <stomp_moveit/PathSeed.h>
+#include <Eigen/Core>
+#include <Eigen/Dense>
+#include <iostream>
+#include <sstream>
+#include <string>
+
 
 static const std::string DEBUG_NS = "stomp_planner";
 static const std::string DESCRIPTION = "STOMP";
@@ -108,13 +115,89 @@ StompPlanner::StompPlanner(const std::string& group,const XmlRpc::XmlRpcValue& c
     config_(config),
     robot_model_(model),
     ik_solver_(new utils::kinematics::IKSolver(model,group)),
-    ph_(new ros::NodeHandle("~"))
+    ph_(new ros::NodeHandle("~")),
+    rows_(0),
+    cols_(0),
+    parameters_(Eigen::MatrixXd::Zero(1,1))
 {
+  // PathSeed subscriber
+  path_seed_subscriber_ = ph_->subscribe("path_seed", 1000, &StompPlanner::pathSeedCallback, this);
   setup();
+}
+
+// callbaxck function for the path_seed topic
+void StompPlanner::pathSeedCallback(const stomp_moveit::PathSeed::ConstPtr& msg)
+{
+    rows_ = msg->rows;
+    cols_ = msg->cols;
+
+    parameters_ = Eigen::MatrixXd(rows_, cols_);
+    int index = 0;
+    for (int i = 0; i < rows_; ++i)
+    {
+        for (int j = 0; j < cols_; ++j)
+        {
+            parameters_(i, j) = msg->data[index++];
+        }
+    }
+    
+    // For debugging
+    // ROS_INFO("Received path seed:");
+    // ROS_INFO("  Rows: %d", rows_);
+    // ROS_INFO("  Cols: %d", cols_);
+    // // Format the matrix using IOFormat
+    // Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n", "[", "]");
+    // std::stringstream ss;
+    // ss << parameters_.format(fmt);
+    // // Convert to std::string
+    // std::string parameters_str = ss.str();
+    // ROS_INFO_STREAM("Received path seed:\n" << parameters_str);
 }
 
 StompPlanner::~StompPlanner()
 {
+}
+
+void StompPlanner::setParameters(const Eigen::MatrixXd& parameters, int rows, int cols) {
+    // For debugging
+    // // Format the matrix using IOFormat
+    // Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n", "[", "]");
+    // std::stringstream ss;
+    // ss << parameters.format(fmt);
+    // // Convert to std::string
+    // std::string parameters_str = ss.str();
+    // ROS_INFO("Setting parameters, rows: %d, cols: %d, parameters: %d", rows_, cols_, parameters_str);
+    parameters_ = parameters;
+    rows_ = rows;
+    cols_ = cols;
+}
+
+Eigen::MatrixXd StompPlanner::getInitialParameters() const {
+    // For debugging
+    // ROS_INFO("Getting initial parameters:");
+    // // Format the matrix using IOFormat
+    // Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n", "[", "]");
+    // std::stringstream ss;
+    // ss << parameters_.format(fmt);
+    // // Convert to std::string
+    // std::string parameters_str = ss.str();
+    // ROS_INFO_STREAM("Initial parameters:\n" << parameters_str);
+
+    return parameters_;
+}
+
+int StompPlanner::getRows() const {
+    // For debugging
+    // ROS_INFO("Getting rows:");
+    // ROS_INFO("  Rows: %d", rows_);
+    return rows_;
+}
+
+int StompPlanner::getCols() const {
+    // For debugging
+    // ROS_INFO("Getting cols:");
+    // ROS_INFO("  Cols: %d", cols_);
+    return cols_;
 }
 
 void StompPlanner::setup()
@@ -235,58 +318,53 @@ bool StompPlanner::solve(planning_interface::MotionPlanDetailedResponse &res)
   }
 
   else {
+    // declearing the planner
+    StompPlanner planner("xarm6", config_, robot_model_);
     if (userInput == "y" || userInput == "Y") {
-      ROS_ERROR("Seeding trajectory from the initial trajectory you set!!!");
-      const int rows = 33;
-      const int cols = 6;
-      Eigen::MatrixXd initial_parameters(rows, cols);
-      initial_parameters <<
-        0.036567054940091825, 0.008038756699026654, -0.10500215743535213, 0.07315649935082913, -0.0086170305746181, -0.06040340267546263,
-        0.07204015239986802, 0.012052915800159686, -0.20406544443298086, 0.14215967800242038, 0.05386102202091574, -0.04384419533296864,
-        0.10751324985964422, 0.01606707490129272, -0.3031287314306096, 0.2111628566540117, 0.1163390746164496, -0.027284987990474664,
-        0.14298634731942048, 0.02008123400242577, -0.40219201842823826, 0.28016603530560286, 0.1788171272119834, -0.01072578064798068,
-        0.17845944477919662, 0.024095393103558793, -0.501255305425867, 0.34916921395719414, 0.2412951798075173, 0.005833426694513311,
-        0.21393254223897293, 0.028109552204691857, -0.6003185924234957, 0.4181723926087854, 0.3037732324030512, 0.022392634037007322,
-        0.24940563969874913, 0.03212371130582489, -0.6993818794211244, 0.4871755712603767, 0.36625128499858495, 0.03895184137950128,
-        0.28487873715852535, 0.036137870406957984, -0.7984451664187533, 0.5561787499119679, 0.4287293375941188, 0.055511048721995276,
-        0.32035183461830147, 0.04015202950809099, -0.897508453416382, 0.6251819285635591, 0.49120739018965265, 0.07207025606448925,
-        0.35582493207807764, 0.044166188609224, -0.9965717404140106, 0.6941851072151505, 0.5536854427851865, 0.08862946340698324,
-        0.39129802953785386, 0.048180347710357035, -1.0956350274116395, 0.7631882858667419, 0.6161634953807203, 0.10518867074947733,
-        0.42677112699763003, 0.05219450681148999, -1.194698314409268, 0.832191464518333, 0.6786415479762541, 0.12174787809197121,
-        0.498120060220351, 0.07202178855149047, -1.2343354614440174, 0.8318010432560274, 0.637321961865345, 0.06687062022350337,
-        0.5694689934430717, 0.09184907029149073, -1.2739726084787666, 0.8314106219937218, 0.596002375754436, 0.011993362355035453,
-        0.6058374437985888, 0.11757332716471339, -1.3009306534575615, 0.795358169021433, 0.5002735969936707, -0.06133660391916018,
-        0.6422058941541056, 0.14329758403793597, -1.3278886984363565, 0.7593057160491441, 0.4045448182329053, -0.13466657019335587,
-        0.678574344509623, 0.1690218409111587, -1.3548467434151517, 0.7232532630768554, 0.3088160394721399, -0.20799653646755153,
-        0.7149427948651401, 0.1947460977843815, -1.381804788393947, 0.6841293379603619, 0.2639962431682253, -0.22594620060751913,
-        0.751311245220657, 0.22047035465760403, -1.4087628333727418, 0.6385139809750995, 0.3267705175937349, -0.12685184113343406,
-        0.7876796955761742, 0.24619461153082678, -1.435720878351537, 0.592898623989837, 0.38954479201924463, -0.02775748165934891,
-        0.8240481459316912, 0.27191886840404944, -1.4626789233303321, 0.5472832670045743, 0.45231906644475417, 0.07133687781473613,
-        0.8604165962872083, 0.2976431252772722, -1.4896369683091275, 0.5016679100193117, 0.5150933408702637, 0.17043123728882129,
-        0.8967850466427253, 0.3233673821504949, -1.5165950132879222, 0.45605255303404907, 0.5778676152957734, 0.2695255967629063,
-        0.9331534969982422, 0.34909163902371754, -1.5435530582667174, 0.4104371960487865, 0.640641889721283, 0.36861995623699145,
-        0.9695219473537594, 0.3748158958969402, -1.5705111032455128, 0.3648218390635239, 0.7034161641467926, 0.46771431571107663,
-        1.0058903977092768, 0.40054015277016297, -1.5974691482243077, 0.3192064820782614, 0.7661904385723024, 0.5668086751851616,
-        1.0422588480647936, 0.42626440964338547, -1.6244271932031022, 0.27359112509299877, 0.8289647129978122, 0.6659030346592466,
-        1.0786272984203111, 0.45198866651660835, -1.651385238181898, 0.22797576810773632, 0.8917389874233215, 0.7649973941333317,
-        1.1149957487758277, 0.4777129233898309, -1.678343283160693, 0.18236041112247356, 0.9545132618488312, 0.8640917536074171,
-        1.1513641991313446, 0.5034371802630536, -1.705301328139488, 0.1367450541372111, 1.017287536274341, 0.963186113081502,
-        1.1877326494868616, 0.5291614371362763, -1.7322593731182827, 0.09112969715194855, 1.0800618106998505, 1.062280472555587,
-        1.2241010998423794, 0.5548856940094992, -1.7592174180970785, 0.04551434016668595, 1.14283608512536, 1.1613748320296722,
-        1.2604695501978966, 0.5806099508827218, -1.7861754630758737, -0.00010101681857666023, 1.20561035955087, 1.2604691915037574;
-      
-      Eigen::MatrixXd initial_parameters_transpose = initial_parameters.transpose();
-      // updating time step in stomp configuraion
-      config_copy.num_timesteps = initial_parameters_transpose.cols();
+      // ROS_ERROR("Seeding trajectory from the initial trajectory you set!!!");
+      std::string userInput2;
+      std::cout << "Do you want to use the pathseeds you set? (y/n): ";
+      std::getline(std::cin, userInput2);
 
-      // setting up up optimization task
-      if(!task_->setMotionPlanRequest(planning_scene_, request_, config_copy, res.error_code_))
-      {
-        res.error_code_.val = moveit_msgs::MoveItErrorCodes::FAILURE;
-        return false;
+      if (userInput2 == "y" || userInput2 == "Y") {
+          // if you want to use the pathseeds you set
+          // getting initial parameters from the pathseed you set
+          Eigen::MatrixXd initial_parameters = planner.getInitialParameters();
+          int rows = planner.getRows();
+          int cols = planner.getCols();
+          // Format the matrix using IOFormat
+          Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n", "[", "]");
+          std::stringstream ss;
+          ss << initial_parameters.format(fmt);
+          // Convert to std::string
+          std::string parameters_str = ss.str();
+          ROS_INFO("|--------------------------------------------------|");
+          ROS_INFO("|  Initial Parameters from the PathSeed you set    |");
+          ROS_INFO("|--------------------------------------------------|");
+
+          std::cout << "rows: " << rows << ", cols: " << cols << std::endl;
+          ROS_INFO_STREAM("Initial parameters:\n" << parameters_str);
+
+          Eigen::MatrixXd initial_parameters_transpose = initial_parameters.transpose();
+          // std::cout << "initial_parameters_transpose:" << std::endl;
+          // std::cout << initial_parameters_transpose << std::endl;
+          // updating time step in stomp configuraion
+          config_copy.num_timesteps = initial_parameters_transpose.cols();
+
+          // setting up up optimization task
+          if(!task_->setMotionPlanRequest(planning_scene_, request_, config_copy, res.error_code_))
+          {
+            res.error_code_.val = moveit_msgs::MoveItErrorCodes::FAILURE;
+            return false;
+          }
+          stomp_->setConfig(config_copy);
+          planning_success = stomp_->solve(initial_parameters_transpose, parameters);
+
+      } 
+      else {
+          std::cout << "Invalid seed number" << std::endl;
+          return 1;
       }
-      stomp_->setConfig(config_copy);
-      planning_success = stomp_->solve(initial_parameters_transpose, parameters);
     }
     if (userInput == "n" || userInput == "N") {
       // extracting start and goal
@@ -833,4 +911,3 @@ bool StompPlanner::getConfigData(ros::NodeHandle &nh, std::map<std::string, XmlR
 
 
 } /* namespace stomp_moveit_interface */
-
