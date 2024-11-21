@@ -37,6 +37,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <stomp_moveit/noise_generators/normal_distribution_sampling.h>
+
 
 
 static const std::string DEBUG_NS = "stomp_planner";
@@ -67,33 +69,46 @@ bool parseConfig(XmlRpc::XmlRpcValue config,const moveit::core::JointModelGroup*
   stomp_config.num_rollouts = 10;
   stomp_config.exponentiated_cost_sensitivity = 10.0;
 
+  ROS_INFO("-------------------- STOMP Configuration --------------------");
+  ROS_INFO("Default values set: control_cost_weight: %f, initialization_method: %d, num_timesteps: %d, delta_t: %f, num_iterations: %d, num_iterations_after_valid: %d, max_rollouts: %d, num_rollouts: %d, exponentiated_cost_sensitivity: %f",
+           stomp_config.control_cost_weight, stomp_config.initialization_method, stomp_config.num_timesteps, stomp_config.delta_t, stomp_config.num_iterations, stomp_config.num_iterations_after_valid, stomp_config.max_rollouts, stomp_config.num_rollouts, stomp_config.exponentiated_cost_sensitivity);
+
   // Load optional config parameters if they exist
   if (config.hasMember("control_cost_weight"))
     stomp_config.control_cost_weight = static_cast<double>(config["control_cost_weight"]);
+    // ROS_INFO("control_cost_weight: %f", stomp_config.control_cost_weight);
 
   if (config.hasMember("initialization_method"))
     stomp_config.initialization_method = static_cast<int>(config["initialization_method"]);
+    // ROS_INFO("initialization_method: %d", stomp_config.initialization_method);
 
   if (config.hasMember("num_timesteps"))
     stomp_config.num_timesteps = static_cast<int>(config["num_timesteps"]);
+    // ROS_INFO("num_timesteps: %d", stomp_config.num_timesteps);
 
   if (config.hasMember("delta_t"))
     stomp_config.delta_t = static_cast<double>(config["delta_t"]);
+    // ROS_INFO("delta_t: %f", stomp_config.delta_t);
 
   if (config.hasMember("num_iterations"))
     stomp_config.num_iterations = static_cast<int>(config["num_iterations"]);
+    // ROS_INFO("num_iterations: %d", stomp_config.num_iterations);
 
   if (config.hasMember("num_iterations_after_valid"))
     stomp_config.num_iterations_after_valid = static_cast<int>(config["num_iterations_after_valid"]);
+    // ROS_INFO("num_iterations_after_valid: %d", stomp_config.num_iterations_after_valid);
 
   if (config.hasMember("max_rollouts"))
     stomp_config.max_rollouts = static_cast<int>(config["max_rollouts"]);
+    // ROS_INFO("max_rollouts: %d", stomp_config.max_rollouts);
 
   if (config.hasMember("num_rollouts"))
     stomp_config.num_rollouts = static_cast<int>(config["num_rollouts"]);
+    // ROS_INFO("num_rollouts: %d", stomp_config.num_rollouts);
 
   if (config.hasMember("exponentiated_cost_sensitivity"))
     stomp_config.exponentiated_cost_sensitivity = static_cast<int>(config["exponentiated_cost_sensitivity"]);
+    // ROS_INFO("exponentiated_cost_sensitivity: %f", stomp_config.exponentiated_cost_sensitivity);
 
   // getting number of joints
   stomp_config.num_dimensions = group->getActiveJointModels().size();
@@ -102,7 +117,6 @@ bool parseConfig(XmlRpc::XmlRpcValue config,const moveit::core::JointModelGroup*
     ROS_ERROR("Planning Group %s has no active joints",group->getName().c_str());
     return false;
   }
-
   return true;
 }
 
@@ -121,7 +135,7 @@ StompPlanner::StompPlanner(const std::string& group,const XmlRpc::XmlRpcValue& c
     parameters_(Eigen::MatrixXd::Zero(1,1))
 {
   // PathSeed subscriber
-  path_seed_subscriber_ = ph_->subscribe("path_seed", 1000, &StompPlanner::pathSeedCallback, this);
+  path_seed_subscriber_ = ph_->subscribe("path_seed", 500, &StompPlanner::pathSeedCallback, this);
   setup();
 }
 
@@ -213,6 +227,8 @@ void StompPlanner::setup()
     // creating tasks
     XmlRpc::XmlRpcValue task_config;
     task_config = config_["task"];
+    // ログ出力
+    // ROS_INFO("Task Config: %s", task_config.toXml().c_str());  // XML形式でログ出力
     task_.reset(new StompOptimizationTask(robot_model_,group_,task_config));
 
     if(!robot_model_->hasJointModelGroup(group_))
@@ -239,27 +255,50 @@ void StompPlanner::setup()
 
 }
 
+
+// モーションプランニングを実行し、プランニングが成功したかどうかを返す
 bool StompPlanner::solve(planning_interface::MotionPlanResponse &res)
 {
+  // プランニングの開始時刻を記録
   ros::WallTime start_time = ros::WallTime::now();
+  
+  // 詳細なプランニングレスポンス用オブジェクト
   planning_interface::MotionPlanDetailedResponse detailed_res;
+
+  // solve(detailed_res) によってモーションプランニングを実行し、成功したかどうかを success に格納
   bool success = solve(detailed_res);
-  if(success)
+
+  // プランニングが成功した場合、最終的な trajectory をレスポンスに設定
+  if (success)
   {
-    res.trajectory_ = detailed_res.trajectory_.back();
+    res.trajectory_ = detailed_res.trajectory_.back();  // trajectory の最後の軌道を res に格納
   }
+
+  // プランニングにかかった時間を計算し、レスポンスに設定
   ros::WallDuration wd = ros::WallTime::now() - start_time;
   res.planning_time_ = ros::Duration(wd.sec, wd.nsec).toSec();
+
+  // エラーコードをレスポンスに設定
   res.error_code_ = detailed_res.error_code_;
 
+  // プランニングの成功/失敗を返す
   return success;
 }
 
+
 bool StompPlanner::solve(planning_interface::MotionPlanDetailedResponse &res)
 {
-  std::string userInput;
-  std::cout << "Do you want to use the initial trajectory you set (y/n): ";
-  std::getline(std::cin, userInput);
+  bool use_pathseed = false;
+
+  // ROSパラメータから値を取得
+  if (!ros::param::get("use_pathseed", use_pathseed))
+  {
+      // パラメータが設定されていない場合はデフォルト値を使用
+      use_pathseed = false;
+      ROS_WARN("Parameter 'use_pathseed' not set. Using default value: false");
+  }
+  ROS_INFO("use_pathseed: %s", use_pathseed ? "true" : "false");
+
   using namespace stomp;
 
   // initializing response
@@ -275,12 +314,84 @@ bool StompPlanner::solve(planning_interface::MotionPlanDetailedResponse &res)
   Eigen::MatrixXd parameters;
   bool planning_success;
 
-  // local stomp config copy
-  auto config_copy = stomp_config_;
+  // Load optimization parameters from rosparam
+  ros::param::get("move_group/stomp/xarm6/optimization/num_timesteps", stomp_config_.num_timesteps);
+  ros::param::get("move_group/stomp/xarm6/optimization/num_iterations", stomp_config_.num_iterations);
+  ros::param::get("move_group/stomp/xarm6/optimization/num_iterations_after_valid", stomp_config_.num_iterations_after_valid);
+  ros::param::get("move_group/stomp/xarm6/optimization/num_rollouts", stomp_config_.num_rollouts);
+  ros::param::get("move_group/stomp/xarm6/optimization/max_rollouts", stomp_config_.max_rollouts);
+  ros::param::get("move_group/stomp/xarm6/optimization/initialization_method", stomp_config_.initialization_method);
+  ros::param::get("move_group/stomp/xarm6/optimization/control_cost_weight", stomp_config_.control_cost_weight);
+
+  // Load task parameters from rosparam
+  // Load parameters from rosparam
+  // try {
+  //     // Load noise generator parameters
+  //     XmlRpc::XmlRpcValue noise_generator;
+  //     if (ros::param::get("move_group/stomp/xarm6/task/noise_generator", noise_generator)) {
+  //         if (noise_generator.getType() == XmlRpc::XmlRpcValue::TypeArray && noise_generator.size() > 0) {
+  //             if (noise_generator[0].hasMember("stddev") && 
+  //                 noise_generator[0]["stddev"].getType() == XmlRpc::XmlRpcValue::TypeArray) {
+  //                 ROS_INFO("stddev values:");
+  //                 for (int i = 0; i < noise_generator[0]["stddev"].size(); ++i) {
+  //                     ROS_INFO("stddev[%d]: %f", i, static_cast<double>(noise_generator[0]["stddev"][i]));
+  //                 }
+  //             }
+  //         }
+  //     } else {
+  //         ROS_ERROR("Failed to get noise_generator parameters.");
+  //     }
+
+      // TODO: taskパラメータに関してはparamを読み込ませてもMoveItには反映されない問題
+      // Load cost function parameters
+      // XmlRpc::XmlRpcValue cost_functions;
+      // if (ros::param::get("move_group/stomp/xarm6/task/cost_functions", cost_functions)) {
+      //     if (cost_functions.getType() == XmlRpc::XmlRpcValue::TypeArray) {
+      //         // ROS_INFO("Cost function parameters: %s", cost_functions.toXml().c_str());
+
+      //         // 配列の最初の要素にアクセス
+      //         XmlRpc::XmlRpcValue first_function = cost_functions[0];
+
+      //         // メンバーの存在を確認し出力
+      //         if (first_function.hasMember("class")) {
+      //             ROS_INFO("Cost function class: %s", std::string(first_function["class"]).c_str());
+      //         }
+      //         if (first_function.hasMember("collision_penalty")) {
+      //             ROS_INFO("Collision penalty: %f", static_cast<double>(first_function["collision_penalty"]));
+      //         }
+      //         if (first_function.hasMember("cost_weight")) {
+      //             ROS_INFO("Cost weight: %f", static_cast<double>(first_function["cost_weight"]));
+      //         }
+      //         if (first_function.hasMember("kernel_window_percentage")) {
+      //             ROS_INFO("Kernel window percentage: %f", static_cast<double>(first_function["kernel_window_percentage"]));
+      //         }
+      //         if (first_function.hasMember("longest_valid_joint_move")) {
+      //             ROS_INFO("Longest valid joint move: %f", static_cast<double>(first_function["longest_valid_joint_move"]));
+      //         }
+      //     } else {
+      //         ROS_WARN("cost_functions is not an array.");
+      //     }
+      // } else {
+      //     ROS_ERROR("Failed to get cost_functions parameters.");
+      // }
+  // } catch (const std::exception& e) {
+  //     ROS_ERROR("Exception occurred: %s", e.what());
+  // }
+
+
+  // debug
+  // ROS_INFO("num_timesteps: %d", stomp_config_.num_timesteps);
+  // ROS_INFO("num_iterations: %d", stomp_config_.num_iterations);
+  // ROS_INFO("num_iterations_after_valid: %d", stomp_config_.num_iterations_after_valid);
+  // ROS_INFO("num_rollouts: %d", stomp_config_.num_rollouts);
+  // ROS_INFO("max_rollouts: %d", stomp_config_.max_rollouts);
+  // ROS_INFO("initialization_method: %d", stomp_config_.initialization_method);
+  // ROS_INFO("control_cost_weight: %f", stomp_config_.control_cost_weight);
 
   // look for seed trajectory
   Eigen::MatrixXd initial_parameters;
   bool use_seed = getSeedParameters(initial_parameters);
+  ROS_INFO("use_seed: %s", use_seed ? "true" : "false");
 
   // create timeout timer
   ros::WallDuration allowed_time(request_.allowed_planning_time);
@@ -304,69 +415,127 @@ bool StompPlanner::solve(planning_interface::MotionPlanDetailedResponse &res)
     ROS_INFO("%s Seeding trajectory from MotionPlanRequest",getName().c_str());
 
     // updating time step in stomp configuraion
-    config_copy.num_timesteps = initial_parameters.cols();
+    stomp_config_.num_timesteps = initial_parameters.cols();
     
     // setting up up optimization task
-    if(!task_->setMotionPlanRequest(planning_scene_, request_, config_copy, res.error_code_))
+    if(!task_->setMotionPlanRequest(planning_scene_, request_, stomp_config_, res.error_code_))
     {
       res.error_code_.val = moveit_msgs::MoveItErrorCodes::FAILURE;
       return false;
     }
 
-    stomp_->setConfig(config_copy);
+    stomp_->setConfig(stomp_config_);
     planning_success = stomp_->solve(initial_parameters, parameters);
   }
 
   else {
     // declearing the planner
     StompPlanner planner("xarm6", config_, robot_model_);
-    if (userInput == "y" || userInput == "Y") {
-      // ROS_ERROR("Seeding trajectory from the initial trajectory you set!!!");
-      std::string userInput2;
-      std::cout << "Do you want to use the pathseeds you set? (y/n): ";
-      std::getline(std::cin, userInput2);
 
-      if (userInput2 == "y" || userInput2 == "Y") {
-          // if you want to use the pathseeds you set
-          // getting initial parameters from the pathseed you set
-          Eigen::MatrixXd initial_parameters = planner.getInitialParameters();
-          int rows = planner.getRows();
-          int cols = planner.getCols();
-          // Format the matrix using IOFormat
-          Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n", "[", "]");
-          std::stringstream ss;
-          ss << initial_parameters.format(fmt);
-          // Convert to std::string
-          std::string parameters_str = ss.str();
-          ROS_INFO("|--------------------------------------------------|");
-          ROS_INFO("|  Initial Parameters from the PathSeed you set    |");
-          ROS_INFO("|--------------------------------------------------|");
+    // Check and obtain initial parameters, retry if necessary
+    const int max_retries = 5;  // Maximum number of retries
+    const double retry_frequency = 50.0;  // Retry frequency in Hz
 
+    Eigen::MatrixXd initial_parameters;
+    int rows, cols;
+    int retries = 0;
+
+    ROS_INFO("use_pathseed: %s", use_pathseed ? "true" : "false");
+    if (use_pathseed == true) {  
+      ros::Rate rate(retry_frequency);  // Rate object to control the loop frequencys
+      // Loop to retry obtaining initial_parameters if they are empty
+      while (retries < max_retries) {
+          ROS_INFO("Attempting to obtain initial parameters from the PathSeed...");
+          initial_parameters = planner.getInitialParameters();
+          rows = planner.getRows();
+          cols = planner.getCols();
           std::cout << "rows: " << rows << ", cols: " << cols << std::endl;
-          ROS_INFO_STREAM("Initial parameters:\n" << parameters_str);
-
-          Eigen::MatrixXd initial_parameters_transpose = initial_parameters.transpose();
-          // std::cout << "initial_parameters_transpose:" << std::endl;
-          // std::cout << initial_parameters_transpose << std::endl;
-          // updating time step in stomp configuraion
-          config_copy.num_timesteps = initial_parameters_transpose.cols();
-
-          // setting up up optimization task
-          if(!task_->setMotionPlanRequest(planning_scene_, request_, config_copy, res.error_code_))
-          {
-            res.error_code_.val = moveit_msgs::MoveItErrorCodes::FAILURE;
-            return false;
+          // Check if the initial_parameters are valid (non-zero size)
+          if (rows > 0 && cols > 0) {
+              ROS_INFO("Initial parameters obtained successfully.");
+              break;
+          } else {
+              ROS_WARN("Initial parameters are empty. Retrying...");
+              retries++;
+              if (retries == max_retries) {
+                  ROS_WARN("Failed to obtain initial parameters after %d retries.", max_retries);
+                  use_pathseed = false;  // Set use_pathseed to false to proceed without pathseed    
+              }
           }
-          stomp_->setConfig(config_copy);
-          planning_success = stomp_->solve(initial_parameters_transpose, parameters);
-
-      } 
-      else {
-          std::cout << "Invalid seed number" << std::endl;
-          return 1;
+          rate.sleep();  // Wait until the next cycle
       }
+      // If we are using pathseed, proceed with pathseed-based planning
+      ROS_INFO("|--------------------------------------------------|");
+      ROS_INFO("|  Initial Parameters from the PathSeed you set    |");
+      ROS_INFO("|--------------------------------------------------|");
+
+      // ROS_WARN("----------------- Get Parameters -----------------");
+      // Load optimization parameters from rosparam
+      ros::param::get("move_group/stomp/xarm6/optimization/num_timesteps", stomp_config_.num_timesteps);
+      ros::param::get("move_group/stomp/xarm6/optimization/num_iterations", stomp_config_.num_iterations);
+      ros::param::get("move_group/stomp/xarm6/optimization/num_iterations_after_valid", stomp_config_.num_iterations_after_valid);
+      ros::param::get("move_group/stomp/xarm6/optimization/num_rollouts", stomp_config_.num_rollouts);
+      ros::param::get("move_group/stomp/xarm6/optimization/max_rollouts", stomp_config_.max_rollouts);
+      ros::param::get("move_group/stomp/xarm6/optimization/initialization_method", stomp_config_.initialization_method);
+      ros::param::get("move_group/stomp/xarm6/optimization/control_cost_weight", stomp_config_.control_cost_weight);
+
+      // debug
+      // ROS_INFO("num_timesteps: %d", stomp_config_.num_timesteps);
+      // ROS_INFO("num_iterations: %d", stomp_config_.num_iterations);
+      // ROS_INFO("num_iterations_after_valid: %d", stomp_config_.num_iterations_after_valid);
+      // ROS_INFO("num_rollouts: %d", stomp_config_.num_rollouts);
+      // ROS_INFO("max_rollouts: %d", stomp_config_.max_rollouts);
+      // ROS_INFO("initialization_method: %d", stomp_config_.initialization_method);
+      // ROS_INFO("control_cost_weight: %f", stomp_config_.control_cost_weight);
+
+      // For debugging the initial parameters
+      // Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n", "[", "]");
+      // std::stringstream ss;
+      // ss << initial_parameters.format(fmt);
+      // std::string parameters_str = ss.str();
+
+      // std::cout << "rows: " << rows << ", cols: " << cols << std::endl;
+      // ROS_INFO_STREAM("Initial parameters:\n" << parameters_str);
+
+      Eigen::MatrixXd initial_parameters_transpose = initial_parameters.transpose();
+      stomp_config_.num_timesteps = initial_parameters_transpose.cols();
+
+      // Get the start and goal positions
+      Eigen::VectorXd start, goal;
+      if (!getStartAndGoal(start, goal)) {
+          res.error_code_.val = moveit_msgs::MoveItErrorCodes::INVALID_MOTION_PLAN;
+          return false;
+      }
+
+      // Ensure the initial trajectory starts and ends at the correct positions
+      if (start.size() == initial_parameters_transpose.rows() && 
+          goal.size() == initial_parameters_transpose.rows()) {
+          initial_parameters_transpose.col(0) = start;  // Set start
+          initial_parameters_transpose.col(initial_parameters_transpose.cols() - 1) = goal;  // Set goal
+          ROS_INFO("Updated the initial trajectory to match the start and goal.");
+      } else {
+          ROS_ERROR("Mismatch between the number of joints in start/goal and the pathseed.");
+          res.error_code_.val = moveit_msgs::MoveItErrorCodes::FAILURE;
+          return false;
+      }
+
+      // ROS_WARN("----------------- Settting up Optimization Task -----------------");
+      // Setting up optimization task
+      if (!task_->setMotionPlanRequest(planning_scene_, request_, stomp_config_, res.error_code_)) {
+          ROS_ERROR("Failed to set motion plan request. Check your PathSeed and request parameters.");
+          res.error_code_.val = moveit_msgs::MoveItErrorCodes::FAILURE;
+          return false;
+      }
+      stomp_->setConfig(stomp_config_);
+
+      // ROS_WARN("----------------- Solve -----------------");
+      planning_success = stomp_->solve(initial_parameters_transpose, parameters);
+      ROS_INFO("Planning success: %s", planning_success ? "true" : "false");
+      ROS_INFO("----------------- End of PathSeed -----------------");
     }
-    if (userInput == "n" || userInput == "N") {
+    else {
+      // if you don't want to use the pathseeds you set
+      ROS_INFO("Not using pathseed you set.");
       // extracting start and goal
       Eigen::VectorXd start, goal;
       if(!getStartAndGoal(start,goal))
@@ -376,12 +545,12 @@ bool StompPlanner::solve(planning_interface::MotionPlanDetailedResponse &res)
       }
 
       // setting up up optimization task
-      if(!task_->setMotionPlanRequest(planning_scene_,request_, config_copy,res.error_code_))
+      if(!task_->setMotionPlanRequest(planning_scene_,request_, stomp_config_,res.error_code_))
       {
         res.error_code_.val = moveit_msgs::MoveItErrorCodes::FAILURE;
         return false;
       }
-      stomp_->setConfig(config_copy);
+      stomp_->setConfig(stomp_config_);
       planning_success = stomp_->solve(start,goal,parameters);
     }
   }
