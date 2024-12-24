@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf
   trac_ik_lib
   visualization_msgs
+  message_generation
 )
 
 find_package(stomp REQUIRED)
@@ -27,6 +28,12 @@ add_message_files(
   PathSeed.msg
 )
 
+# msg -> .h create
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  geometry_msgs
+)
 
 ###################################
 ## catkin specific configuration ##
