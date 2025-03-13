@@ -32,3 +32,5 @@ test_results
 
 # ROS build
 build/
+
+.DS_Store
